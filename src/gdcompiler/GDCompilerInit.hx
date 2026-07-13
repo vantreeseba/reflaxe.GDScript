@@ -2,10 +2,15 @@ package gdcompiler;
 
 #if (macro || gdscript_runtime)
 
+import haxe.io.Path;
 import haxe.macro.Compiler;
+import haxe.macro.Context;
 import haxe.macro.Expr;
 import haxe.macro.Type;
 import haxe.display.Display.MetadataTarget;
+
+import sys.FileSystem;
+import sys.io.File;
 
 import reflaxe.ReflectCompiler;
 import reflaxe.input.ExpressionModifier;
@@ -18,6 +23,8 @@ class GDCompilerInit {
 		if(isRunScript()) {
 			return;
 		}
+
+		registerStdPaths();
 
 		// Add our compiler to Reflaxe
 		ReflectCompiler.AddCompiler(new GDCompiler(), {
@@ -82,6 +89,46 @@ class GDCompilerInit {
 				ReflectCompiler.MetaTemplate(":exportFlags3dNavigation", "", true, [], [ClassField], (e, p) -> "@export_flags_3d_navigation")
 			]
 		});
+	}
+
+	/**
+		Adds the GDScript standard-library overrides to the classpath.
+
+		When Reflaxe/GDScript is used as a merged Haxelib package (built by
+		`Submit.hx`), every source folder is already flattened into the single
+		`classPath`. But when it is consumed straight from a repo checkout — a
+		git or lix dependency, or a local `-cp` — only `src/` is on the classpath.
+		The overrides in `std/` and `std/gdscript/_std/` are then missing, so Haxe
+		falls back to the (extern) core `haxe.Exception`, `haxe.ds.StringMap`, etc.,
+		and Reflaxe skips generating them, leaving dangling references in the output.
+
+		Here we re-add the paths declared in `haxelib.json`'s `reflaxe.stdPaths`,
+		resolved relative to this file's own location. Each is guarded by an
+		existence check, so this is a harmless no-op for the merged package.
+	**/
+	static function registerStdPaths() {
+		#if macro
+		final selfPath = try Context.resolvePath("gdcompiler/GDCompilerInit.hx") catch(_) return;
+		// selfPath is `<root>/src/gdcompiler/GDCompilerInit.hx`; step back to `<root>`.
+		final root = Path.normalize(Path.directory(selfPath) + "/../../");
+
+		final haxelibJson = Path.join([root, "haxelib.json"]);
+		if(!FileSystem.exists(haxelibJson)) return;
+
+		final stdPaths: Null<Array<String>> = try {
+			final data = haxe.Json.parse(File.getContent(haxelibJson));
+			data.reflaxe.stdPaths;
+		} catch(_) null;
+		if(stdPaths == null) return;
+
+		final existing = Context.getClassPath();
+		for(rel in stdPaths) {
+			final abs = Path.addTrailingSlash(Path.normalize(Path.join([root, rel])));
+			if(FileSystem.exists(abs) && !existing.contains(abs)) {
+				Compiler.addClassPath(abs);
+			}
+		}
+		#end
 	}
 
 	/**
