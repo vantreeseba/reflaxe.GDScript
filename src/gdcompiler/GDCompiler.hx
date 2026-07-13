@@ -17,9 +17,13 @@ import reflaxe.data.EnumOptionData;
 import reflaxe.debug.MeasurePerformance;
 
 import reflaxe.DirectToStringCompiler;
+import reflaxe.preprocessors.implementations.PreventRepeatVariablesImpl;
+import reflaxe.preprocessors.implementations.RemoveConstantBoolIfsImpl;
 import reflaxe.preprocessors.implementations.RemoveSingleExpressionBlocksImpl;
 import reflaxe.preprocessors.implementations.RemoveTemporaryVariablesImpl;
+import reflaxe.preprocessors.implementations.RemoveUnnecessaryBlocksImpl;
 import reflaxe.preprocessors.implementations.everything_is_expr.EverythingIsExprSanitizer;
+import reflaxe.preprocessors.implementations.everything_is_expr.EverythingIsExprSanitizer.EverythingIsExprSanitizerOptions;
 
 import gdcompiler.config.Define;
 import gdcompiler.config.Meta;
@@ -300,6 +304,12 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 		final variables = [];
 		final functions = [];
 		final staticVariables = [];
+
+		// Assignment expressions for a generated `_static_init()`, used for
+		// `static var` initializers that are genuinely block-like (e.g. array
+		// comprehensions or loops) and therefore cannot be expressed inline in
+		// GDScript. Each entry assigns the computed value to its static field.
+		final staticInitExprs: Array<TypedExpr> = [];
 		final className = classType.name;
 		final isWrapper = classType.hasMeta(Meta.Wrapper);
 		final isWrapPublicOnly = classType.hasMeta(Meta.WrapPublicOnly);
@@ -424,12 +434,43 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 			} else {
 				final e = field.expr() ?? v.findDefaultExpr();
 				if(e != null && !e.isStaticField("gdscript.Syntax", "NoAssign", true)) {
-					// Do quick and dirty optimizations for "block-like" variable assignments.
-					// TODO: Incorporate as feature in Reflaxe.
-					final tvr = new RemoveTemporaryVariablesImpl(AllVariables, e, new Map());
-					final e = RemoveSingleExpressionBlocksImpl.process(tvr.fixTemporaries());
+					// Normalize the initializer the same way function bodies are. The
+					// sanitizer hoists nested block-like sub-expressions (an array
+					// comprehension, a loop, or an inlined constructor argument) up to
+					// the top level. If the result is block-like, the initializer is
+					// genuinely statement-based and cannot be emitted inline as
+					// `var x = <expr>` — that produces invalid GDScript.
+					final sanitizeOptions: EverythingIsExprSanitizerOptions = { convertIncrementAndDecrementOperators: true };
+					final normalized = new EverythingIsExprSanitizer(e, sanitizeOptions, null, null).convertedExpr();
 
-					compileClassVarExpr(e);
+					// `convertedExpr()` wraps a plain value in a single-element
+					// `TBlock`, so the initializer is only *genuinely* statement-based
+					// when the normalized form has more than one top-level statement
+					// or its lone statement is itself block-like (an `if`/`while`/etc.
+					// that can't be an inline `var x = <expr>`).
+					final needsStatements = switch(normalized.expr) {
+						case TBlock(exprs):
+							exprs.length > 1 || (exprs.length == 1 && EverythingIsExprSanitizer.isBlocklikeExpr(exprs[0]));
+						case _:
+							EverythingIsExprSanitizer.isBlocklikeExpr(normalized);
+					}
+
+					// For static vars, hoist those statements into a generated
+					// `_static_init()` that assigns the final value to the field.
+					// (Instance vars keep the old inline behavior for now.)
+					if(v.isStatic && !isConst && needsStatements) {
+						final assignee = { expr: TIdent(name), pos: field.pos, t: field.type };
+						final sanitized = new EverythingIsExprSanitizer(e, sanitizeOptions, null, assignee).convertedExpr();
+						staticInitExprs.push(sanitized);
+						"";
+					} else {
+						// Simple initializer: do quick and dirty optimizations for
+						// "block-like" variable assignments so it can be emitted inline.
+						// TODO: Incorporate as feature in Reflaxe.
+						final tvr = new RemoveTemporaryVariablesImpl(AllVariables, e, new Map());
+						final reduced = RemoveSingleExpressionBlocksImpl.process(tvr.fixTemporaries());
+						compileClassVarExpr(reduced);
+					}
 				} else {
 					"";
 				}
@@ -681,6 +722,32 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 			#if (eval && reflaxe_gdscript_measure)
 			funcMeasure.measure("Reflaxe " + classType.name + "." + f.field.name + " compiled in %MILLI% milliseconds");
 			#end
+		}
+
+		// ----------------------
+		// Generated `_static_init()` for block-like `static var` initializers.
+		// Godot calls this automatically after the static variables are declared,
+		// so referencing earlier-declared static vars is safe. The assignments are
+		// gathered into a single body and run through the same cleanup passes used
+		// for function bodies so that (a) temporary variable names generated per
+		// initializer don't collide, and (b) redundant `if(true)`/blocks are removed.
+		if(staticInitExprs.length > 0) {
+			var blockExpr: TypedExpr = {
+				expr: TBlock(staticInitExprs),
+				pos: classType.pos,
+				t: TDynamic(null)
+			};
+			// Rename repeated variable declarations (each initializer independently
+			// generated temporaries like `_g`, which now share one function scope).
+			blockExpr = new PreventRepeatVariablesImpl(blockExpr, null, null).fixRepeatVariables();
+			var body = blockExpr.unwrapBlock();
+			body = RemoveConstantBoolIfsImpl.process(body);
+			body = RemoveUnnecessaryBlocksImpl.process(body);
+
+			final staticInit = new StringBuf();
+			staticInit.add("static func _static_init() -> void:\n");
+			staticInit.add(compileExpressionsIntoLines(body).tab());
+			functions.push(staticInit.toString());
 		}
 
 		// if there are no instance variables or functions,
