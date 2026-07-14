@@ -139,6 +139,7 @@ class TypeCompiler {
 					switch(abs.name) {
 						case "Void": "void";
 						case "Int": "int";
+						case "UInt": "int";
 						case "Float":"float";
 						case "Single": "float";
 						case "Bool": "bool";
