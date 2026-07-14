@@ -1254,13 +1254,35 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 
 		final operatorStr = OperatorHelper.binopToString(op);
 
+		// Haxe encodes operator precedence by nesting TBinop nodes, but GDScript
+		// re-parses this flat output with its own precedence and has no
+		// comparison chaining, so an operand that is itself a binary operation
+		// regroups unless parenthesized. e.g. `(a < 0) != (b < 0)` would emit as
+		// `a < 0 != b < 0`, which GDScript reads as `((a < 0) != b) < 0`.
+		var e1IsBinop = isBinopExpr(e1);
+		var e2IsBinop = isBinopExpr(e2);
+
 		// Wrap primitives with str(...) when added with String
 		if(op.isAddition()) {
-			if(checkForPrimitiveStringAddition(e1, e2)) gdExpr2 = "str(" + gdExpr2 + ")";
-			if(checkForPrimitiveStringAddition(e2, e1)) gdExpr1 = "str(" + gdExpr1 + ")";
+			if(checkForPrimitiveStringAddition(e1, e2)) { gdExpr2 = "str(" + gdExpr2 + ")"; e2IsBinop = false; }
+			if(checkForPrimitiveStringAddition(e2, e1)) { gdExpr1 = "str(" + gdExpr1 + ")"; e1IsBinop = false; }
 		}
 
+		if(e1IsBinop) gdExpr1 = '($gdExpr1)';
+		if(e2IsBinop) gdExpr2 = '($gdExpr2)';
+
 		return gdExpr1 + " " + operatorStr + " " + gdExpr2;
+	}
+
+	// A binary operation whose output is not already parenthesized. TParenthesis
+	// and OpUShr emit their own parens, so they do not count here.
+	function isBinopExpr(e: TypedExpr): Bool {
+		return switch(e.expr) {
+			case TBinop(OpUShr, _, _): false;
+			case TBinop(_, _, _): true;
+			case TMeta(_, inner): isBinopExpr(inner);
+			default: false;
+		}
 	}
 
 	inline function checkForPrimitiveStringAddition(strExpr: TypedExpr, primExpr: TypedExpr) {
