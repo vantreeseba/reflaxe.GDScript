@@ -726,11 +726,15 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 
 		// ----------------------
 		// Generated `_static_init()` for block-like `static var` initializers.
-		// Godot calls this automatically after the static variables are declared,
-		// so referencing earlier-declared static vars is safe. The assignments are
-		// gathered into a single body and run through the same cleanup passes used
-		// for function bodies so that (a) temporary variable names generated per
-		// initializer don't collide, and (b) redundant `if(true)`/blocks are removed.
+		// Godot calls this automatically when the class is loaded, after the static
+		// variables are declared, so referencing earlier-declared static vars is
+		// safe. Note this auto-call only happens for scripts that are active in the
+		// current context: non-tool scripts do not run it in the editor, which is
+		// why classes with static state are emitted as `@tool` (see below). The
+		// assignments are gathered into a single body and run through the same
+		// cleanup passes used for function bodies so that (a) temporary variable
+		// names generated per initializer don't collide, and (b) redundant
+		// `if(true)`/blocks are removed.
 		if(staticInitExprs.length > 0) {
 			var blockExpr: TypedExpr = {
 				expr: TBlock(staticInitExprs),
@@ -777,6 +781,16 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 		// Put everything together
 		final gdscriptContent = {
 			var result = new StringBuf();
+
+			// Godot does not auto-run static initialization (neither the generated
+			// `_static_init()` nor inline `static var` initializers) for non-tool
+			// scripts in the editor. Classes that hold static state are frequently
+			// referenced from editor (@tool) code, so their tables would stay empty
+			// there. Marking such classes `@tool` makes Godot run their static init
+			// in the editor too. Skip if the class already carries `@tool`.
+			if(staticVariables.length > 0 && !StringTools.contains(header.toString(), "@tool")) {
+				result.add("@tool\n");
+			}
 
 			result.add(header);
 
