@@ -1249,6 +1249,15 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 			case OpAssignOp(OpUShr): {
 				return '$gdExpr1 = ((($gdExpr1 & -1) >> $gdExpr2) & -1)';
 			}
+			// GDScript's `%` only accepts ints; on floats it is a parse error and
+			// `fmod` must be used instead. Haxe's `%` is defined on both, so pick
+			// `fmod` whenever either operand is a floating-point value.
+			case OpMod if(e1.t.isFloat() || e2.t.isFloat()): {
+				return 'fmod($gdExpr1, $gdExpr2)';
+			}
+			case OpAssignOp(OpMod) if(e1.t.isFloat() || e2.t.isFloat()): {
+				return '$gdExpr1 = fmod($gdExpr1, $gdExpr2)';
+			}
 			case _:
 		}
 

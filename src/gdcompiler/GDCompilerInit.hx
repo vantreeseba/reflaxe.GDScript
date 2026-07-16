@@ -148,6 +148,7 @@ class GDCompilerInit {
 		"return", "class", "class_name", "extends", "is", "in", "as", "self", "signal",
 		"func", "static", "const", "enum", "var", "breakpoint", "preload",
 		"await", "yield", "assert", "void", "PI", "TAU", "INF", "NAN",
+		"and", "or", "not",
 
 		// types
 		"void", "bool", "int", "float",
