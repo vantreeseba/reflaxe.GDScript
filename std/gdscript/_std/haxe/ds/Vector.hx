@@ -97,7 +97,7 @@ abstract Vector<T>(VectorData<T>) {
 	/**
 		Creates a new Array, copy the content from the Vector to it, and returns it.
 	**/
-	public function toArray():Array<T> {
+	public inline function toArray():Array<T> {
 		var a = new Array();
 		var len = length;
 		for (i in 0...len)
@@ -120,7 +120,7 @@ abstract Vector<T>(VectorData<T>) {
 	/**
 		Creates a new Vector by copying the elements of `array`.
 	**/
-	static public function fromArrayCopy<T>(array:Array<T>):Vector<T> {
+	static public inline function fromArrayCopy<T>(array:Array<T>):Vector<T> {
 		var vec = new Vector<T>(array.length);
 		for (i in 0...array.length)
 			vec.set(i, array[i]);
@@ -130,7 +130,7 @@ abstract Vector<T>(VectorData<T>) {
 	/**
 		Returns a shallow copy of `this` Vector.
 	**/
-	public function copy<T>():Vector<T> {
+	public inline function copy<T>():Vector<T> {
 		var r = new Vector<T>(length);
 		Vector.blit(cast this, 0, r, 0, length);
 		return r;
