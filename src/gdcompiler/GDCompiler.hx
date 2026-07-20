@@ -929,7 +929,9 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 			case TBinop(OpAssign, { expr: TField(e1, FAnon(classFieldRef)) }, e2): {
 				var gdExpr1 = compileExpressionOrError(e1);
 				var gdExpr2 = compileExpressionOrError(e2);
-				result.add(gdExpr1 + ".set(\"" + classFieldRef.get().name + "\", " + gdExpr2 + ")");
+				// Escaped, to match the read path and the declaration.
+				final key = compileVarName(classFieldRef.get().name);
+				result.add(gdExpr1 + ".set(\"" + key + "\", " + gdExpr2 + ")");
 			}
 			case TBinop(op, e1, e2): {
 				result.add(binopToGDScript(op, e1, e2));
@@ -953,7 +955,11 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 				result.add("{\n");
 				for(i in 0...fields.length) {
 					final field = fields[i];
-					result.addMulti("\t\"", field.name, "\": ");
+					// Escaped to match how the same field is read back (see the
+					// FAnon branch of `fieldAccessToGDScript`) and how a class
+					// field of the same name is declared, so an anonymous
+					// structure and a class instance stay interchangeable.
+					result.addMulti("\t\"", compileVarName(field.name), "\": ");
 					result.add(compileExpression(field.expr));
 					if(i < fields.length - 1) {
 						result.add(",");
@@ -976,14 +982,12 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 				}
 			}
 			case TCall(e, el): {
-				final isEmptyConstructorSuperCall =  switch(e.unwrapParenthesis().expr) {
-					case TConst(TSuper) if(compilingInConstructor && el.length == 0): true;
-					case _: false;
-				}
-
-				if(!isEmptyConstructorSuperCall) {
-					result.add(callToGDScript(e, el, expr));
-				}
+				// A no-argument `super()` inside a constructor used to be dropped
+				// here, on the assumption that GDScript runs the base `_init`
+				// implicitly. It does not, once the derived class declares its own
+				// `_init` — the base constructor is simply skipped, so every field
+				// the base initializes stays null. Emit the call.
+				result.add(callToGDScript(e, el, expr));
 			}
 			case TNew(classTypeRef, _, el): {
 				result.add(newToGDScript(classTypeRef, expr, el));
@@ -1288,6 +1292,15 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 			case OpAssignOp(OpMod) if(e1.t.isFloat() || e2.t.isFloat()): {
 				return '$gdExpr1 = fmod($gdExpr1, $gdExpr2)';
 			}
+			// Haxe's `/` is always floating point — `1 / 2` is `0.5`. GDScript's
+			// is not: `int / int` truncates, so the same expression yields `0`.
+			// Nothing downstream can recover the lost fraction, and the failure is
+			// silent — `percent / 100` quietly becomes 0 and a loop that should
+			// run never starts. Force one operand to float when neither already
+			// is, which makes GDScript pick the floating-point overload.
+			case OpDiv if(!e1.t.isFloat() && !e2.t.isFloat()): {
+				return 'float($gdExpr1) / $gdExpr2';
+			}
 			case _:
 		}
 
@@ -1305,6 +1318,15 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 		if(op.isAddition()) {
 			if(checkForPrimitiveStringAddition(e1, e2)) { gdExpr2 = "str(" + gdExpr2 + ")"; e2IsBinop = false; }
 			if(checkForPrimitiveStringAddition(e2, e1)) { gdExpr1 = "str(" + gdExpr1 + ")"; e1IsBinop = false; }
+		}
+
+		// Same coercion for `+=`. `isAddition()` only matches bare `OpAdd`, so the
+		// compound form fell through and emitted `output += val` verbatim, which
+		// GDScript rejects ("Invalid operands String and int"). Only the right side
+		// can be wrapped here: the left is the assignment target.
+		if(op.match(OpAssignOp(OpAdd)) && checkForPrimitiveStringAddition(e1, e2)) {
+			gdExpr2 = "str(" + gdExpr2 + ")";
+			e2IsBinop = false;
 		}
 
 		if(e1IsBinop) gdExpr1 = '($gdExpr1)';
@@ -1567,8 +1589,13 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 			// Check if we're accessing an anonymous type.
 			// If so, it's a Dictionary in GDScript and .get should be used.
 			switch(fa) {
-				case FAnon(classFieldRef): {
-					return gdExpr + ".get(\"" + classFieldRef.get().name + "\")";
+				case FAnon(_): {
+					// `name`, not the raw field name: reserved-word escaping has to
+					// reach the key too. A Haxe field named `seed` is declared as
+					// `_seed`, so reading it back as `.get("seed")` finds nothing —
+					// and, because `Object.get` and `Dictionary.get` share this
+					// syntax, that silently returns null instead of erroring.
+					return gdExpr + ".get(\"" + name + "\")";
 				}
 				case _:
 			}

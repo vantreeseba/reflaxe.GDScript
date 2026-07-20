@@ -81,6 +81,25 @@ class TypeCompiler {
 		}
 	}
 
+	/**
+		GDScript rejects nested typed collections: `Array[Array[int]]` and
+		`Dictionary[String, Array[int]]` are parse errors ("Nested typed
+		collections are not supported"). Only the outer container may carry an
+		element type, and that element type must be a plain type name.
+
+		`Array<Array<Int>>` is a perfectly ordinary Haxe type, so drop the inner
+		element type and emit `Array[Array]` / `Dictionary[String, Array]`, which
+		Godot accepts. The only cost is Variant dispatch one level in — the same
+		thing an untyped `Array` would have given us anyway.
+	**/
+	function degradeNestedCollection(typeName: String): String {
+		final bracket = typeName.indexOf("[");
+		if(bracket < 0) {
+			return typeName;
+		}
+		return typeName.substr(0, bracket);
+	}
+
 	public function compileType(t: Type, errorPos: Position, isExport: Bool = false): Null<String> {
 		// Check for @:dont_compile
 		if(t.getMeta().maybeHas(Meta.DontCompile)) {
@@ -91,7 +110,7 @@ class TypeCompiler {
 		if(t.getMeta().maybeHas(":nativeTypeCode")) {
 			final params = t.getParams();
 			final paramCallbacks = if(params != null && params.length > 0) {
-				params.map(paramType -> (() -> compileType(paramType, errorPos, isExport) ?? "Variant"));
+				params.map(paramType -> (() -> degradeNestedCollection(compileType(paramType, errorPos, isExport) ?? "Variant")));
 			} else {
 				[];
 			}

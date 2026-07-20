@@ -25,6 +25,12 @@ extern class Std {
 	@:nativeFunctionCode("{arg0}.to_float()")
 	public  static function parseFloat(x: String): Float;
 
-	@:nativeFunctionCode("floor(randf() * {arg0})")
+	// `floori`, not `floor`: GDScript's `floor()` is Variant-typed and returns a
+	// float, so `Std.random` handed back a float despite being declared `Int`.
+	// Everything downstream then failed on a type it was told to expect as int —
+	// `<<` rejects float operands outright, and an `Array[int]` refuses the
+	// element. `floori` is the int-returning variant and matches Haxe's contract
+	// of an Int in [0, x).
+	@:nativeFunctionCode("floori(randf() * {arg0})")
 	public static function random(x: Int): Int;
 }
