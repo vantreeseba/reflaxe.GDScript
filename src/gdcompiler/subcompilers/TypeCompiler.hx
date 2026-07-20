@@ -186,7 +186,21 @@ class TypeCompiler {
 				return compileModuleType(TClassDecl(clsRef), isExport);
 			}
 			case TEnum(enmRef, _): return compileEnum(enmRef, isExport);
-			case TType(defRef, _): return compileType(defRef.get().type, errorPos, isExport);
+			case TType(defRef, params): {
+				final def = defRef.get();
+
+				// Substitute the type parameters into the typedef's definition before
+				// compiling it. Without this, `typedef Box<T> = Array<T>` used as
+				// `Box<Int>` compiles its definition with `T` still unbound; `T` is a
+				// type parameter, so it yields `null` and callers fall back to
+				// `Variant` — emitting `Array[Variant]` instead of `Array[int]`.
+				// Mirrors what the `TAbstract` case above does with `abs.params`.
+				final internalType = #if macro {
+					TypeTools.applyTypeParameters(def.type, def.params, params);
+				} #else def.type #end;
+
+				return compileType(internalType, errorPos, isExport);
+			}
 
 			case TMono(typeRef): {
 				final t = typeRef.get();
