@@ -1020,7 +1020,7 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 				if(maybeExpr != null && !maybeExpr.isStaticField("gdscript.Syntax", "NoAssign", true)) {
 					final e = compileExpressionOrError(maybeExpr);
 					if(tvar.meta.maybeHas(":arrayWrap")) {
-						result.addMulti(" = [", e, "]");	
+						result.addMulti(" = [", e, "]");
 					} else {
 						#if !gdscript_untyped
 						final compiledType = typeCompiler.compileType(tvar.t, expr.pos);
@@ -1031,6 +1031,22 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 
 						result.addMulti(" = ", e);
 					}
+				} else {
+					// Declaration with no initializer still gets its type, so it is a
+					// typed local rather than a Variant. The EverythingIsExpr sanitizer
+					// emits this shape constantly — `var tempI32` declared here, assigned
+					// inside the block that follows — so leaving it untyped made every
+					// intermediate value in a hot loop pay Variant dispatch.
+					//
+					// GDScript default-initializes a typed local (`var x: int` -> 0), and
+					// `compileType` already returns null for types that must stay untyped
+					// to hold `null`, so this cannot make a nullable local non-nullable.
+					#if !gdscript_untyped
+					final compiledType = typeCompiler.compileType(tvar.t, expr.pos);
+					if(compiledType != null) {
+						result.addMulti(": ", compiledType);
+					}
+					#end
 				}
 			}
 			case TBlock(el): {
