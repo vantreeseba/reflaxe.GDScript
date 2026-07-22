@@ -103,6 +103,13 @@ class GDCompiler extends reflaxe.DirectToStringCompiler {
 	**/
 	var compilingInConstructor: Bool = false;
 
+	/**
+		Set when a structural `Iterable.iterator()` call is compiled, so the
+		`HxIterator.gd` runtime helper it relies on is emitted at the end. See
+		`emitIteratorProtocolCall`.
+	**/
+	var usedHxIterator: Bool = false;
+
 	#if generate_resource_export_list
 	/**
 		A list of resources preloaded by the code.
@@ -149,6 +156,9 @@ class GDCompiler extends reflaxe.DirectToStringCompiler {
 		Generates the Godot plugin if `-D generate_godot_plugin` is defined.
 	**/
 	public override function onCompileEnd() {
+		if(usedHxIterator) {
+			setExtraFile("HxIterator.gd", generateHxIteratorContent());
+		}
 		if(Context.defined(Define.GenerateGodotPlugin)) {
 			generatePlugin();
 		}
@@ -157,6 +167,81 @@ class GDCompiler extends reflaxe.DirectToStringCompiler {
 			setExtraFile("resource_export_list.txt", usedResources.join(", "));
 		}
 		#end
+	}
+
+	/**
+		Runtime support for the Haxe iterator protocol, emitted as `HxIterator.gd`
+		when a structural `Iterable.iterator()` call is compiled (see
+		`emitIteratorProtocolCall`). `of(v)` returns an object exposing `hasNext`
+		and `next` as Callable members -- readable via `.get(...)`, which is how
+		the generated loop reads them -- for an Array, a class instance
+		implementing either the Iterable or Iterator protocol, or an anonymous
+		structure carrying the same as fields.
+	**/
+	function generateHxIteratorContent(): String {
+		return "class_name HxIterator
+## Runtime support for the Haxe iterator protocol on GDScript values.
+##
+## Emitted by reflaxe.GDScript when a value of a structural Iterable<T> type is
+## iterated. That compiles to `v.iterator()`, which no GDScript value implements
+## natively: an Array has no `iterator` method, and a class instance's methods
+## are not gettable as properties. `of` normalizes any such value into one
+## uniform iterator whose `hasNext`/`next` Callables the generated loop reads
+## with `.get(\"hasNext\")` / `.get(\"next\")`.
+
+## Returns a Haxe-style iterator over `v`.
+static func of(v: Variant) -> _Iter:
+	if v is Array:
+		return _ArrayIter.new(v)
+	return _ObjIter.new(_resolve(v))
+
+# If `v` is an Iterable (exposes `iterator`), step into it and iterate what it
+# returns; otherwise `v` is already an iterator.
+static func _resolve(v: Variant) -> Variant:
+	if v is Object and v.has_method(\"iterator\"):
+		return v.iterator()
+	if v is Dictionary and v.has(\"iterator\"):
+		return v[\"iterator\"].call()
+	return v
+
+class _Iter:
+	var hasNext: Callable
+	var next: Callable
+
+# Iterates a native Array by index. `hasNext`/`next` are bound methods, not
+# lambdas, so each read sees the current `_i` (GDScript lambdas capture locals
+# by value at creation and could not advance it).
+class _ArrayIter extends _Iter:
+	var _a: Array
+	var _i: int = 0
+	func _init(a: Array) -> void:
+		_a = a
+		hasNext = _has_next
+		next = _next
+	func _has_next() -> bool:
+		return _i < _a.size()
+	func _next() -> Variant:
+		var e: Variant = _a[_i]
+		_i += 1
+		return e
+
+# Adapts an already-constructed iterator, whether a class instance with real
+# `hasNext()`/`next()` methods or an anonymous structure carrying them as fields.
+class _ObjIter extends _Iter:
+	var _it: Variant
+	func _init(it: Variant) -> void:
+		_it = it
+		hasNext = _has_next
+		next = _next
+	func _has_next() -> bool:
+		return _call(\"hasNext\")
+	func _next() -> Variant:
+		return _call(\"next\")
+	func _call(m: String) -> Variant:
+		if _it is Dictionary:
+			return _it[m].call()
+		return _it.call(m)
+";
 	}
 
 	/**
@@ -1368,10 +1453,15 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 			return result;
 		}
 
-		// Check FieldAccess 
+		// Check FieldAccess
 		final code = switch(calledExpr.expr) {
 			case TField(_, fa): {
 				switch(fa) {
+					// Structural `iterator()` -- see `emitIteratorProtocolCall`.
+					case (FAnon(_.get() => cf) | FClosure(_, _.get() => cf))
+						if(cf.name == "iterator" && arguments.length == 0): {
+						emitIteratorProtocolCall(calledExpr);
+					}
 					// enum field access
 					case FEnum(_, _): {
 						compileEnumFieldCall(calledExpr, arguments);
@@ -1415,6 +1505,29 @@ ${exitTreeLines.length > 0 ? exitTreeLines.join("\n").tab() : "\tpass"}
 		}
 
 		return result;
+	}
+
+	/**
+		Compiles a structural `iterable.iterator()` call.
+
+		A value whose static type is the `Iterable<T>` typedef (an anonymous
+		`{ iterator: Void -> Iterator<T> }`) has its `.iterator()` compiled as an
+		anonymous-field access -- `iterable.get("iterator").call()`. No GDScript
+		value answers that: an Array has no `iterator` at all, and a class
+		instance's methods are not gettable as properties, so `.get(...)` returns
+		null. Route it through the `HxIterator` runtime helper instead, which
+		normalizes any of them into a uniform `{ hasNext, next }` object. The
+		surrounding loop's `.get("hasNext")` / `.get("next")` reads then resolve
+		against that object's two Callable members, so only the `iterator()` call
+		itself needs rewriting.
+	**/
+	function emitIteratorProtocolCall(calledExpr: TypedExpr): String {
+		usedHxIterator = true;
+		final receiver = switch(calledExpr.expr) {
+			case TField(e, _): compileExpression(e);
+			case _: throw "emitIteratorProtocolCall expects a field-access call";
+		}
+		return 'HxIterator.of($receiver)';
 	}
 
 	function newToGDScript(classTypeRef: Ref<ClassType>, originalExpr: TypedExpr, el: Array<TypedExpr>): String {
